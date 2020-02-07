@@ -78,6 +78,17 @@ func EventToMap(event string) (result map[string]string) {
 	return
 }
 
+func HeadersToMap(headers string) (result map[string]string) {
+	result = make(map[string]string)
+	spltevent := strings.Split(headers, "\n")
+	for i := 0; i < len(spltevent); i++ {
+		if val := strings.SplitN(spltevent[i], ": ", 2); len(val) == 2 {
+			result[val[0]] = urlDecode(strings.TrimSpace(val[1]))
+		}
+	}
+	return
+}
+
 // helper function for uuid generation
 func genUUID() string {
 	b := make([]byte, 16)

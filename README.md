@@ -43,6 +43,11 @@ func printChannelHangup(eventStr string, connIdx int) {
 	fmt.Printf("%v, connIdx: %d\n", eventMap, connIdx)
 }
 
+// Handle log output
+func logHandlerFunc(headers map[string]string, body string) {
+	fmt.Printf("%+v\n Body: %s\n", headers, body)
+}
+
 func main() {
 	// Init a syslog writter for our test
 	l, errLog := syslog.New(syslog.LOG_INFO, "TestFSock")
@@ -62,8 +67,11 @@ func main() {
 		"CHANNEL_ANSWER":          {printChannelAnswer},
 		"CHANNEL_HANGUP_COMPLETE": {printChannelHangup},
 	}
-
-	fs, err := fsock.NewFSock("127.0.0.1:8021", "ClueCon", 10, evHandlers, evFilters, l, 0)
+	
+	//or pass nil to not collect logs
+	logHandler := fsock.LogHandler{Level: 7, Handler: logHandlerFunc}
+    
+	fs, err := fsock.NewFSock("127.0.0.1:8021", "ClueCon", 10, evHandlers, &logHandler, evFilters, l, 0)
 	if err != nil {
 		l.Crit(fmt.Sprintf("FreeSWITCH error:", err))
 		return

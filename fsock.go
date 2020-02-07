@@ -34,13 +34,14 @@ func init() {
 }
 
 // Connects to FS and starts buffering input
-func NewFSock(fsaddr, fspaswd string, reconnects int, eventHandlers map[string][]func(string, int), eventFilters map[string][]string, l *syslog.Writer, connIdx int) (fsock *FSock, err error) {
+func NewFSock(fsaddr, fspaswd string, reconnects int, eventHandlers map[string][]func(string, int), logHandler *LogHandler, eventFilters map[string][]string, l *syslog.Writer, connIdx int) (fsock *FSock, err error) {
 	fsock = &FSock{
 		fsMutex:         new(sync.RWMutex),
 		connIdx:         connIdx,
 		fsaddress:       fsaddr,
 		fspaswd:         fspaswd,
 		eventHandlers:   eventHandlers,
+		logHandler:      logHandler,
 		eventFilters:    eventFilters,
 		backgroundChans: make(map[string]chan string),
 		cmdChan:         make(chan string),
@@ -63,6 +64,7 @@ type FSock struct {
 	fsaddress       string
 	fspaswd         string
 	eventHandlers   map[string][]func(string, int) // eventStr, connId
+	logHandler      *LogHandler
 	eventFilters    map[string][]string
 	backgroundChans map[string]chan string
 	cmdChan         chan string
@@ -71,6 +73,11 @@ type FSock struct {
 	stopReadEvents  chan struct{} //Keep a reference towards forkedReadEvents so we can stop them whenever necessary
 	errReadEvents   chan error
 	logger          *syslog.Writer
+}
+
+type LogHandler struct {
+	Level   int
+	Handler func(map[string]string, string)
 }
 
 // Connect or reconnect
@@ -115,6 +122,10 @@ func (self *FSock) connect() error {
 	}
 	// Subscribe to events handled by event handlers
 	if err := self.eventsPlain(getMapKeys(self.eventHandlers)); err != nil {
+		return err
+	}
+	// Subscribe to logs handled by event handlers
+	if err := self.logsPlain(self.logHandler); err != nil {
 		return err
 	}
 
@@ -372,6 +383,8 @@ func (self *FSock) readEvents() {
 			self.cmdChan <- body
 		} else if strings.Contains(hdr, "command/reply") {
 			self.cmdChan <- headerVal(hdr, "Reply-Text")
+		} else if self.logHandler != nil && strings.Contains(hdr, "log/data") {
+			go self.logHandler.Handler(HeadersToMap(hdr), body)
 		} else if body != "" { // We got a body, could be event, try dispatching it
 			self.dispatchEvent(body)
 		}
@@ -409,6 +422,24 @@ func (self *FSock) eventsPlain(events []string) error {
 	} else if !strings.Contains(rply, "Reply-Text: +OK") {
 		self.Disconnect()
 		return fmt.Errorf("Unexpected events-subscribe reply received: <%s>", rply)
+	}
+	return nil
+}
+
+// Subscribe to logs
+func (self *FSock) logsPlain(logHandler *LogHandler) error {
+	if logHandler == nil || logHandler.Level < 1 {
+		return nil
+	}
+	eventsCmd := "log"
+	eventsCmd += " " + strconv.Itoa(logHandler.Level)
+	eventsCmd += "\n\n"
+	self.send(eventsCmd)
+	if rply, err := self.readHeaders(); err != nil {
+		return err
+	} else if !strings.Contains(rply, "Reply-Text: +OK") {
+		self.Disconnect()
+		return fmt.Errorf("Unexpected logs-subscribe reply received: <%s>", rply)
 	}
 	return nil
 }
@@ -502,6 +533,7 @@ func NewFSockPool(maxFSocks int, fsaddr, fspasswd string, reconnects int, maxWai
 		reconnects:    reconnects,
 		maxWaitConn:   maxWaitConn,
 		eventHandlers: eventHandlers,
+		logHandler:    nil,
 		eventFilters:  eventFilters,
 		logger:        l,
 		allowedConns:  make(chan struct{}, maxFSocks),
@@ -513,13 +545,14 @@ func NewFSockPool(maxFSocks int, fsaddr, fspasswd string, reconnects int, maxWai
 	return pool, nil
 }
 
-// Connection handler for commands sent to FreeSWITCH
+// Connection Handler for commands sent to FreeSWITCH
 type FSockPool struct {
 	connIdx       int
 	fsAddr        string
 	fsPasswd      string
 	reconnects    int
 	eventHandlers map[string][]func(string, int)
+	logHandler    *LogHandler
 	eventFilters  map[string][]string
 	logger        *syslog.Writer
 	allowedConns  chan struct{} // Will be populated with members allowed
@@ -538,7 +571,7 @@ func (self *FSockPool) PopFSock() (fsock *FSock, err error) {
 	select { // No fsock available in the pool, wait for first one showing up
 	case fsock = <-self.fSocks:
 	case <-self.allowedConns:
-		fsock, err = NewFSock(self.fsAddr, self.fsPasswd, self.reconnects, self.eventHandlers, self.eventFilters, self.logger, self.connIdx)
+		fsock, err = NewFSock(self.fsAddr, self.fsPasswd, self.reconnects, self.eventHandlers, self.logHandler, self.eventFilters, self.logger, self.connIdx)
 		if err != nil {
 			return nil, err
 		}
